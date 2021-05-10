@@ -43,12 +43,16 @@ func configureRuntimes(conf *config.Config) {
 func defaultV2ShimConfig(conf *config.Config, runtimePath string) *types.ShimConfig {
 	return &types.ShimConfig{
 		Binary: linuxShimV2,
-		Opts: &v2runcoptions.Options{
-			BinaryName:    runtimePath,
-			Root:          filepath.Join(conf.ExecRoot, "runtime-"+defaultRuntimeName),
-			SystemdCgroup: UsingSystemd(conf),
-			NoPivotRoot:   os.Getenv("DOCKER_RAMDISK") != "",
-		},
+		Opts:   defaultShimV2Opts(conf, runtimePath),
+	}
+}
+
+func defaultShimV2Opts(conf *config.Config, runtimePath string) interface{} {
+	return &v2runcoptions.Options{
+		BinaryName:    runtimePath,
+		Root:          filepath.Join(conf.ExecRoot, "runtime-"+defaultRuntimeName),
+		SystemdCgroup: UsingSystemd(conf),
+		NoPivotRoot:   os.Getenv("DOCKER_RAMDISK") != "",
 	}
 }
 
@@ -61,6 +65,94 @@ func defaultV1ShimConfig(conf *config.Config, runtimePath string) *types.ShimCon
 			SystemdCgroup: UsingSystemd(conf),
 		},
 	}
+}
+
+func initShimOpts(conf *config.Config, opts map[string]interface{}, runtimePath string) (interface{}, error) {
+	t, exists := opts["type"]
+	if !exists {
+		return nil, errors.New("failed to init shim opts, type unspecified")
+	}
+	tVal, ok := t.(string)
+	if !ok {
+		return nil, errors.New("failed to init shim opts, type unrecognized")
+	}
+	switch tVal {
+	case "v1":
+		return initShimV1Opts(conf, opts, runtimePath)
+	case "v2":
+		return initShimV2Opts(conf, opts, runtimePath)
+	default:
+		return nil, errors.Errorf("failed to init shim opts, unsupported type %s", tVal)
+	}
+}
+
+func initShimV1Opts(conf *config.Config, opts map[string]interface{}, runtimePath string) (interface{}, error) {
+	runtime, err := readOptsStringValue(opts, "runtime", runtimePath)
+	if err != nil {
+		return nil, err
+	}
+	runtimeRoot, err := readOptsStringValue(opts, "runtimeRoot", filepath.Join(conf.ExecRoot, "runtime-"+defaultRuntimeName))
+	if err != nil {
+		return nil, err
+	}
+	systemdCgroup, err := readOptsBoolValue(opts, "systemdCgroup", UsingSystemd(conf))
+	if err != nil {
+		return nil, err
+	}
+	return &runctypes.RuncOptions{
+		Runtime:       runtime,
+		RuntimeRoot:   runtimeRoot,
+		SystemdCgroup: systemdCgroup,
+	}, nil
+}
+
+func initShimV2Opts(conf *config.Config, opts map[string]interface{}, runtimePath string) (interface{}, error) {
+	binaryName, err := readOptsStringValue(opts, "binaryName", runtimePath)
+	if err != nil {
+		return nil, err
+	}
+	root, err := readOptsStringValue(opts, "root", filepath.Join(conf.ExecRoot, "runtime-"+defaultRuntimeName))
+	if err != nil {
+		return nil, err
+	}
+	systemdCgroup, err := readOptsBoolValue(opts, "systemdCgroup", UsingSystemd(conf))
+	if err != nil {
+		return nil, err
+	}
+	noPivotRoot, err := readOptsBoolValue(opts, "noPivotRoot", os.Getenv("DOCKER_RAMDISK") != "")
+	if err != nil {
+		return nil, err
+	}
+	return &v2runcoptions.Options{
+		BinaryName:    binaryName,
+		Root:          root,
+		SystemdCgroup: systemdCgroup,
+		NoPivotRoot:   noPivotRoot,
+	}, nil
+}
+
+func readOptsStringValue(opts map[string]interface{}, field string, defVal string) (string, error) {
+	val, exists := opts[field]
+	if !exists {
+		return defVal, nil
+	}
+	sVal, ok := val.(string)
+	if !ok {
+		return "", errors.Errorf("failed to read string value from shim opts, field = %s, value = %v", field, sVal)
+	}
+	return sVal, nil
+}
+
+func readOptsBoolValue(opts map[string]interface{}, field string, defVal bool) (bool, error) {
+	val, exists := opts[field]
+	if !exists {
+		return defVal, nil
+	}
+	sVal, ok := val.(bool)
+	if !ok {
+		return false, errors.Errorf("failed to read string value from shim opts, field = %s, value = %v", field, sVal)
+	}
+	return sVal, nil
 }
 
 func (daemon *Daemon) loadRuntimes() error {
@@ -107,6 +199,19 @@ func (daemon *Daemon) initRuntimes(runtimes map[string]types.Runtime) (err error
 		}
 		if rt.Shim == nil {
 			rt.Shim = defaultV2ShimConfig(daemon.configStore, rt.Path)
+			continue
+		}
+		if rt.Shim.Opts == nil {
+			rt.Shim.Opts = defaultShimV2Opts(daemon.configStore, rt.Path)
+			continue
+		}
+		m, ok := rt.Shim.Opts.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if rt.Shim.Opts, err = initShimOpts(daemon.configStore, m, rt.Path); err != nil {
+			err = errors.Wrap(err, "failed to setup runtime, shim opts init failed")
+			return err
 		}
 	}
 	return nil

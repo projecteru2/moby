@@ -521,13 +521,13 @@ type Runtime struct {
 
 	// This is exposed here only for internal use
 	// It is not currently supported to specify custom shim configs
-	Shim *ShimConfig `json:"-"`
+	Shim *ShimConfig `json:"shim"`
 }
 
 // ShimConfig is used by runtime to configure containerd shims
 type ShimConfig struct {
-	Binary string
-	Opts   interface{}
+	Binary string      `json:"binary"`
+	Opts   interface{} `json:"opts"`
 }
 
 // DiskUsage contains response of Engine API:
