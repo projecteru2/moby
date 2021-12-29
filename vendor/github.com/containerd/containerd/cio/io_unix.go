@@ -1,3 +1,4 @@
+//go:build !windows
 // +build !windows
 
 /*
@@ -29,6 +30,7 @@ import (
 
 	"github.com/containerd/fifo"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 )
 
 // NewFIFOSetInDir returns a new FIFOSet with paths in a temporary directory under root
@@ -140,11 +142,63 @@ func openFifos(ctx context.Context, fifos *FIFOSet) (pipes, error) {
 	return f, nil
 }
 
+func openAutoRestoreFifos(ctx context.Context, fifos *FIFOSet) (pipes, error) {
+	var err error
+	defer func() {
+		if err != nil {
+			fifos.Close()
+		}
+	}()
+
+	var f pipes
+	if fifos.Stdin != "" {
+		if f.Stdin, err = fifo.OpenFifo(ctx, fifos.Stdin, syscall.O_WRONLY|syscall.O_CREAT|syscall.O_NONBLOCK, 0700); err != nil {
+			return f, errors.Wrapf(err, "failed to open stdin fifo")
+		}
+		defer func() {
+			if err != nil && f.Stdin != nil {
+				f.Stdin.Close()
+			}
+		}()
+	}
+	if fifos.Stdout != "" {
+		logrus.Debugf("OpenAutoRestoreFifo %s", fifos.Stdout)
+		if f.Stdout, err = fifo.OpenAutoRestoreFifo(fifos.Stdout, syscall.O_RDONLY|syscall.O_CREAT|syscall.O_NONBLOCK, 0700); err != nil {
+			return f, errors.Wrapf(err, "failed to open stdout fifo")
+		}
+		defer func() {
+			if err != nil && f.Stdout != nil {
+				f.Stdout.Close()
+			}
+		}()
+	}
+	if !fifos.Terminal && fifos.Stderr != "" {
+		logrus.Debugf("OpenAutoRestoreFifo %s", fifos.Stderr)
+		if f.Stderr, err = fifo.OpenAutoRestoreFifo(fifos.Stderr, syscall.O_RDONLY|syscall.O_CREAT|syscall.O_NONBLOCK, 0700); err != nil {
+			return f, errors.Wrapf(err, "failed to open stderr fifo")
+		}
+	}
+	return f, nil
+}
+
 // NewDirectIO returns an IO implementation that exposes the IO streams as io.ReadCloser
 // and io.WriteCloser.
 func NewDirectIO(ctx context.Context, fifos *FIFOSet) (*DirectIO, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	pipes, err := openFifos(ctx, fifos)
+	return &DirectIO{
+		pipes: pipes,
+		cio: cio{
+			config:  fifos.Config,
+			closers: append(pipes.closers(), fifos),
+			cancel:  cancel,
+		},
+	}, err
+}
+
+func NewAutoRestoreIO(ctx context.Context, fifos *FIFOSet) (*DirectIO, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	pipes, err := openAutoRestoreFifos(ctx, fifos)
 	return &DirectIO{
 		pipes: pipes,
 		cio: cio{
