@@ -124,5 +124,10 @@ func newFIFOSet(bundleDir, processID string, withStdin, withTerminal bool) *cio.
 }
 
 func (c *client) newDirectIO(ctx context.Context, fifos *cio.FIFOSet) (*cio.DirectIO, error) {
-	return cio.NewDirectIO(ctx, fifos)
+	// return cio.NewDirectIO(ctx, fifos)
+	return cio.NewAutoRestoreIO(ctx, fifos)
+}
+
+func (c *client) newAutoRestoreDirectIO(ctx context.Context, fifos *cio.FIFOSet) (*cio.DirectIO, error) {
+	return cio.NewAutoRestoreIO(ctx, fifos)
 }
